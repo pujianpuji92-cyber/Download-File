@@ -50,8 +50,12 @@ jobs:
             REFERER="${URL/\/download/}"
             USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
 
-            # Resolve the final download URL by following redirects
-            FINAL_URL=$(curl -sI -L -o /dev/null -w "%{url_effective}" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" "$URL")
+            # Resolve the final download URL by extracting Location header
+            FINAL_URL=$(curl -sI "$URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" | grep -i "location:" | head -n 1 | awk '{print $2}' | tr -d '\r')
+
+            if [ -z "$FINAL_URL" ]; then
+              FINAL_URL="$URL"
+            fi
 
             echo "Resolved Final URL: $FINAL_URL"
 
