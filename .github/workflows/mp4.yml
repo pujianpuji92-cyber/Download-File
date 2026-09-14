@@ -1,14 +1,15 @@
-name: Download MP4 and Upload to Google Drive
+name: Universal Downloader and Upload to Google Drive
 
 on:
   workflow_dispatch:
     inputs:
       FILE_URL:
-        description: "Masukkan URL file MP4 atau M3U8"
+        description: "Masukkan URL file, M3U8, MP4, MKV, atau format lainnya"
         required: true
         type: string
+
       OUTPUT_NAME:
-        description: "Nama file output (tanpa ekstensi). Contoh: video_saya"
+        description: "Nama file output tanpa ekstensi. Contoh: video_saya"
         required: false
         default: "output"
         type: string
@@ -18,79 +19,557 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ==========================================
+      # CHECKOUT
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ==========================================
+      # INSTALL DEPENDENCIES
+      # ==========================================
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl aria2 ffmpeg
+          sudo apt-get install -y \
+            curl \
+            aria2 \
+            ffmpeg \
+            file \
+            wget \
+            ca-certificates
+
           curl https://rclone.org/install.sh | sudo bash
 
-      - name: Setup rclone config (decode base64)
+
+      # ==========================================
+      # SETUP RCLONE
+      # ==========================================
+      - name: Setup rclone config
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
 
+          echo "${{ secrets.RCLONE_CONF_B64 }}" \
+            | base64 -d \
+            > ~/.config/rclone/rclone.conf
+
+          chmod 600 ~/.config/rclone/rclone.conf
+
+
+      # ==========================================
+      # CREATE DOWNLOAD DIRECTORY
+      # ==========================================
       - name: Create downloads folder
-        run: mkdir -p downloads
-
-      - name: Detect if URL is MP4 or M3U8 and Process
         run: |
-          URL="${{ github.event.inputs.FILE_URL }}"
-          OUTPUT="${{ github.event.inputs.OUTPUT_NAME }}"
+          mkdir -p downloads
 
-          if [[ "$URL" == *.m3u8 ]]; then
-            echo "URL adalah M3U8 → memakai ffmpeg untuk convert..."
-            ffmpeg -i "$URL" -c copy "downloads/$OUTPUT.mp4"
+
+      # ==========================================
+      # UNIVERSAL DOWNLOAD
+      # ==========================================
+      - name: Universal Downloader
+        env:
+          FILE_URL: ${{ inputs.FILE_URL }}
+          OUTPUT_NAME: ${{ inputs.OUTPUT_NAME }}
+        run: |
+
+          set -e
+
+          URL="$FILE_URL"
+          OUTPUT="$OUTPUT_NAME"
+
+          echo "=========================================="
+          echo " UNIVERSAL DOWNLOADER"
+          echo "=========================================="
+          echo "URL    : $URL"
+          echo "OUTPUT : $OUTPUT"
+          echo "=========================================="
+
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+
+          # ------------------------------------------
+          # REFERER
+          # ------------------------------------------
+          #
+          # Untuk URL:
+          # https://cdn.0000456.xyz/download/7/xxxx
+          #
+          # Referer:
+          # https://cdn.0000456.xyz/7/xxxx
+          #
+          REFERER="${URL/\/download/}"
+
+          echo "Referer: $REFERER"
+
+
+          # ==========================================
+          # DETECT M3U8
+          # ==========================================
+          URL_LOWER=$(echo "$URL" | tr '[:upper:]' '[:lower:]')
+
+          if [[ "$URL_LOWER" == *.m3u8* ]]; then
+
+            echo ""
+            echo "=========================================="
+            echo " M3U8 DETECTED"
+            echo "=========================================="
+
+            echo "Downloading HLS stream..."
+
+            ffmpeg \
+              -hide_banner \
+              -loglevel info \
+              -headers "Referer: $REFERER"$'\r\n'"User-Agent: $USER_AGENT"$'\r\n' \
+              -i "$URL" \
+              -map 0 \
+              -c copy \
+              -movflags +faststart \
+              "downloads/${OUTPUT}.mp4"
+
+            echo ""
+            echo "M3U8 download completed."
+
           else
-            echo "URL bukan M3U8 → download langsung..."
 
-            # Extract Referer (remove /download if exists)
-            REFERER="${URL/\/download/}"
-            USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
+            echo ""
+            echo "=========================================="
+            echo " DIRECT FILE DETECTED"
+            echo "=========================================="
 
-            # Resolve the final download URL by extracting the Location header via a GET request (HEAD might be blocked)
-            FINAL_URL=$(curl -s -D - -o /dev/null -r 0-0 "$URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" | grep -i "location:" | head -n 1 | awk '{print $2}' | tr -d '\r')
+            # ==========================================
+            # RESOLVE REDIRECT
+            # ==========================================
 
-            if [ -z "$FINAL_URL" ]; then
-              FINAL_URL="$URL"
+            echo "Resolving URL..."
+
+            HEADERS=$(curl \
+              -sS \
+              -L \
+              -D - \
+              -o /dev/null \
+              -r 0-0 \
+              --max-redirs 10 \
+              -H "Referer: $REFERER" \
+              -H "User-Agent: $USER_AGENT" \
+              "$URL")
+
+            echo ""
+            echo "Response headers:"
+            echo "$HEADERS"
+
+
+            # ==========================================
+            # FINAL URL
+            # ==========================================
+
+            FINAL_URL=$(curl \
+              -sS \
+              -L \
+              -o /dev/null \
+              -w '%{url_effective}' \
+              --max-redirs 10 \
+              -r 0-0 \
+              -H "Referer: $REFERER" \
+              -H "User-Agent: $USER_AGENT" \
+              "$URL")
+
+            echo ""
+            echo "Final URL:"
+            echo "$FINAL_URL"
+
+
+            # ==========================================
+            # CONTENT-DISPOSITION
+            # ==========================================
+
+            FILENAME=$(echo "$HEADERS" \
+              | grep -i "content-disposition:" \
+              | tail -n 1 \
+              | sed -n 's/.*filename\*=[^'\'']*'\''[^'\'']*'\''\([^;]*\).*/\1/p' \
+              | tr -d '\r')
+
+            if [ -z "$FILENAME" ]; then
+              FILENAME=$(echo "$HEADERS" \
+                | grep -i "content-disposition:" \
+                | tail -n 1 \
+                | sed -n 's/.*filename="\([^"]*\)".*/\1/p' \
+                | tr -d '\r')
             fi
 
-            echo "Resolved Final URL: $FINAL_URL"
+            if [ -z "$FILENAME" ]; then
+              FILENAME=$(echo "$HEADERS" \
+                | grep -i "content-disposition:" \
+                | tail -n 1 \
+                | sed -n 's/.*filename=\([^;]*\).*/\1/p' \
+                | tr -d '\r')
+            fi
 
-            # Get headers from FINAL_URL to determine the real extension (using GET instead of HEAD)
-            HEADERS=$(curl -s -D - -o /dev/null -r 0-0 "$FINAL_URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT")
-            FILENAME=$(echo "$HEADERS" | grep -i "content-disposition:" | sed -n 's/.*filename="\([^"]*\)".*/\1/p' | tr -d '\r')
+            echo ""
+            echo "Content-Disposition filename:"
+            echo "${FILENAME:-NOT FOUND}"
 
-            if [ -n "$FILENAME" ] && [[ "$FILENAME" == *.* ]]; then
-              EXT="${FILENAME##*.}"
+
+            # ==========================================
+            # CONTENT-TYPE
+            # ==========================================
+
+            CONTENT_TYPE=$(echo "$HEADERS" \
+              | grep -i "^content-type:" \
+              | tail -n 1 \
+              | sed 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//' \
+              | cut -d ';' -f 1 \
+              | tr -d '\r' \
+              | tr '[:upper:]' '[:lower:]')
+
+            echo ""
+            echo "Content-Type:"
+            echo "${CONTENT_TYPE:-NOT FOUND}"
+
+
+            # ==========================================
+            # TRY TO GET EXTENSION FROM FILENAME
+            # ==========================================
+
+            EXT=""
+
+            if [ -n "$FILENAME" ]; then
+
+              if [[ "$FILENAME" == *.* ]]; then
+                EXT="${FILENAME##*.}"
+                EXT=$(echo "$EXT" \
+                  | tr '[:upper:]' '[:lower:]' \
+                  | tr -cd '[:alnum:]')
+              fi
+
+            fi
+
+
+            # ==========================================
+            # MIME TYPE → EXTENSION
+            # ==========================================
+
+            if [ -z "$EXT" ]; then
+
+              case "$CONTENT_TYPE" in
+
+                video/x-matroska)
+                  EXT="mkv"
+                  ;;
+
+                video/mp4)
+                  EXT="mp4"
+                  ;;
+
+                video/webm)
+                  EXT="webm"
+                  ;;
+
+                video/x-msvideo)
+                  EXT="avi"
+                  ;;
+
+                video/quicktime)
+                  EXT="mov"
+                  ;;
+
+                video/mpeg)
+                  EXT="mpeg"
+                  ;;
+
+                video/mp2t)
+                  EXT="ts"
+                  ;;
+
+                audio/mpeg)
+                  EXT="mp3"
+                  ;;
+
+                audio/mp4)
+                  EXT="m4a"
+                  ;;
+
+                audio/flac)
+                  EXT="flac"
+                  ;;
+
+                audio/wav|audio/x-wav)
+                  EXT="wav"
+                  ;;
+
+                application/zip)
+                  EXT="zip"
+                  ;;
+
+                application/x-rar-compressed)
+                  EXT="rar"
+                  ;;
+
+                application/pdf)
+                  EXT="pdf"
+                  ;;
+
+                application/json)
+                  EXT="json"
+                  ;;
+
+                text/plain)
+                  EXT="txt"
+                  ;;
+
+              esac
+
+            fi
+
+
+            # ==========================================
+            # URL EXTENSION
+            # ==========================================
+
+            if [ -z "$EXT" ]; then
+
+              CLEAN_URL=$(echo "$FINAL_URL" | sed 's/[?#].*$//')
+              URL_FILENAME=$(basename "$CLEAN_URL")
+
+              if [[ "$URL_FILENAME" == *.* ]]; then
+
+                EXT="${URL_FILENAME##*.}"
+
+                EXT=$(echo "$EXT" \
+                  | tr '[:upper:]' '[:lower:]' \
+                  | tr -cd '[:alnum:]')
+
+              fi
+
+            fi
+
+
+            # ==========================================
+            # INITIAL DOWNLOAD
+            # ==========================================
+
+            echo ""
+            echo "=========================================="
+            echo " DOWNLOAD"
+            echo "=========================================="
+
+            # Jika extension sudah diketahui dari header,
+            # langsung download dengan nama tersebut.
+
+            if [ -n "$EXT" ]; then
+
+              echo "Detected extension: .$EXT"
+
+              aria2c \
+                --allow-overwrite=true \
+                --auto-file-renaming=false \
+                --file-allocation=none \
+                -x 16 \
+                -s 16 \
+                -k 1M \
+                --header="Referer: $REFERER" \
+                --header="User-Agent: $USER_AGENT" \
+                "$FINAL_URL" \
+                -d "downloads" \
+                -o "${OUTPUT}.${EXT}"
+
             else
-              # Fallback: extract extension from FINAL_URL safely
-              URL_PATH=$(echo "$FINAL_URL" | awk -F'?' '{print $1}')
-              BASENAME=$(basename "$URL_PATH")
-              if [[ "$BASENAME" == *.* ]]; then
-                EXT="${BASENAME##*.}"
-              else
-                EXT=""
-              fi
 
-              if [[ -z "$EXT" ]]; then
-                EXT="mp4"
-              fi
+              echo "Extension belum diketahui."
+              echo "Downloading temporary file untuk file signature detection..."
+
+              aria2c \
+                --allow-overwrite=true \
+                --auto-file-renaming=false \
+                --file-allocation=none \
+                -x 16 \
+                -s 16 \
+                -k 1M \
+                --header="Referer: $REFERER" \
+                --header="User-Agent: $USER_AGENT" \
+                "$FINAL_URL" \
+                -d "downloads" \
+                -o "${OUTPUT}.download"
+
+
+              # ========================================
+              # FILE SIGNATURE DETECTION
+              # ========================================
+
+              echo ""
+              echo "=========================================="
+              echo " FILE SIGNATURE DETECTION"
+              echo "=========================================="
+
+              FILE_INFO=$(file "downloads/${OUTPUT}.download")
+
+              echo "$FILE_INFO"
+
+
+              # ========================================
+              # DETECT USING FILE COMMAND
+              # ========================================
+
+              case "$FILE_INFO" in
+
+                *Matroska*)
+                  EXT="mkv"
+                  ;;
+
+                *WebM*)
+                  EXT="webm"
+                  ;;
+
+                *"ISO Media"*)
+                  EXT="mp4"
+                  ;;
+
+                *MP4*)
+                  EXT="mp4"
+                  ;;
+
+                *"MPEG transport stream"*)
+                  EXT="ts"
+                  ;;
+
+                *"Audio MP3"*)
+                  EXT="mp3"
+                  ;;
+
+                *"Audio file with ID3"*)
+                  EXT="mp3"
+                  ;;
+
+                *FLAC*)
+                  EXT="flac"
+                  ;;
+
+                *WAVE*)
+                  EXT="wav"
+                  ;;
+
+                *PDF*)
+                  EXT="pdf"
+                  ;;
+
+                *Zip*)
+                  EXT="zip"
+                  ;;
+
+                *RAR*)
+                  EXT="rar"
+                  ;;
+
+                *JPEG*)
+                  EXT="jpg"
+                  ;;
+
+                *PNG*)
+                  EXT="png"
+                  ;;
+
+                *GIF*)
+                  EXT="gif"
+                  ;;
+
+                *ASCII*)
+                  EXT="txt"
+                  ;;
+
+                *)
+                  EXT="bin"
+                  ;;
+
+              esac
+
+
+              echo ""
+              echo "Detected extension from file signature: .$EXT"
+
+
+              mv \
+                "downloads/${OUTPUT}.download" \
+                "downloads/${OUTPUT}.${EXT}"
+
             fi
 
-            echo "Detected extension: $EXT"
-
-            # If user left OUTPUT_NAME as "output" and we found a real FILENAME, we could optionally use the real filename.
-            # But based on input defaults, we will use $OUTPUT.$EXT
-
-            aria2c -x 16 -s 16 -k 1M --header="Referer: $REFERER" --header="User-Agent: $USER_AGENT" "$FINAL_URL" -d "downloads" -o "$OUTPUT.$EXT"
           fi
 
+
+          # ==========================================
+          # VERIFY RESULT
+          # ==========================================
+
+          echo ""
+          echo "=========================================="
+          echo " DOWNLOAD RESULT"
+          echo "=========================================="
+
+          ls -lah downloads/
+
+
+          # ==========================================
+          # FILE INFORMATION
+          # ==========================================
+
+          for FILE in downloads/*; do
+
+            echo ""
+            echo "------------------------------------------"
+            echo "File: $FILE"
+            echo "------------------------------------------"
+
+            file "$FILE"
+
+            echo ""
+
+            if command -v ffprobe >/dev/null 2>&1; then
+              ffprobe \
+                -v error \
+                -show_entries format=format_name,format_long_name,duration,size \
+                -of default=noprint_wrappers=1 \
+                "$FILE" \
+                || true
+            fi
+
+          done
+
+
+      # ==========================================
+      # UPLOAD TO GOOGLE DRIVE
+      # ==========================================
       - name: Upload to Google Drive
         run: |
-          rclone copy downloads/ gdrive:backup-folder --progress
 
+          echo "=========================================="
+          echo " UPLOAD TO GOOGLE DRIVE"
+          echo "=========================================="
+
+          rclone copy \
+            downloads/ \
+            gdrive:backup-folder \
+            --progress \
+            --transfers=4 \
+            --checkers=8
+
+
+      # ==========================================
+      # SHOW UPLOADED FILE
+      # ==========================================
+      - name: List downloaded files
+        run: |
+          echo "=========================================="
+          echo " FINAL FILES"
+          echo "=========================================="
+
+          ls -lah downloads/
+
+
+      # ==========================================
+      # CLEANUP
+      # ==========================================
       - name: Cleanup local files
-        run: rm -rf downloads
+        if: always()
+        run: |
+          rm -rf downloads
