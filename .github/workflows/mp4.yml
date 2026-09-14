@@ -1,17 +1,16 @@
-name: Universal Downloader and Upload to Google Drive
+name: Universal File Downloader and Upload to Google Drive
 
 on:
   workflow_dispatch:
     inputs:
       FILE_URL:
-        description: "Masukkan URL file, M3U8, MP4, MKV, atau format lainnya"
+        description: "URL file yang ingin didownload"
         required: true
         type: string
 
       OUTPUT_NAME:
-        description: "Nama file output tanpa ekstensi. Contoh: video_saya"
-        required: false
-        default: "output"
+        description: "Nama file tanpa ekstensi. Contoh: Tumbal.Proyek.2026.1080p.NF.WEB-DL.AAC2.0.H.264-KQRM"
+        required: true
         type: string
 
 jobs:
@@ -36,9 +35,8 @@ jobs:
           sudo apt-get install -y \
             curl \
             aria2 \
-            ffmpeg \
             file \
-            wget \
+            ffmpeg \
             ca-certificates
 
           curl https://rclone.org/install.sh | sudo bash
@@ -67,53 +65,113 @@ jobs:
 
 
       # ==========================================
-      # UNIVERSAL DOWNLOAD
+      # UNIVERSAL DOWNLOADER
       # ==========================================
-      - name: Universal Downloader
+      - name: Download file
         env:
           FILE_URL: ${{ inputs.FILE_URL }}
           OUTPUT_NAME: ${{ inputs.OUTPUT_NAME }}
+
         run: |
 
           set -e
 
           URL="$FILE_URL"
-          OUTPUT="$OUTPUT_NAME"
-
-          echo "=========================================="
-          echo " UNIVERSAL DOWNLOADER"
-          echo "=========================================="
-          echo "URL    : $URL"
-          echo "OUTPUT : $OUTPUT"
-          echo "=========================================="
+          NAME="$OUTPUT_NAME"
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
           # ------------------------------------------
           # REFERER
           # ------------------------------------------
-          #
-          # Untuk URL:
-          # https://cdn.0000456.xyz/download/7/xxxx
-          #
-          # Referer:
-          # https://cdn.0000456.xyz/7/xxxx
-          #
+
           REFERER="${URL/\/download/}"
 
-          echo "Referer: $REFERER"
+          echo "=========================================="
+          echo " UNIVERSAL DOWNLOADER"
+          echo "=========================================="
+          echo "URL     : $URL"
+          echo "Referer : $REFERER"
+          echo "Name    : $NAME"
+          echo "=========================================="
+
+
+          # ==========================================
+          # CHECK RESPONSE HEADERS
+          # ==========================================
+
+          echo ""
+          echo "▶ Checking server..."
+
+          curl \
+            -sS \
+            -L \
+            -r 0-0 \
+            -D headers.txt \
+            -o /dev/null \
+            --max-redirs 10 \
+            -H "Referer: $REFERER" \
+            -H "User-Agent: $USER_AGENT" \
+            "$URL"
+
+          echo ""
+          echo "========== SERVER HEADERS =========="
+          cat headers.txt
+          echo "===================================="
+
+
+          # ==========================================
+          # CONTENT TYPE
+          # ==========================================
+
+          CONTENT_TYPE=$(grep -i "^content-type:" headers.txt \
+            | tail -n 1 \
+            | cut -d: -f2- \
+            | tr -d '\r' \
+            | xargs \
+            | cut -d';' -f1 \
+            | tr '[:upper:]' '[:lower:]')
+
+          echo ""
+          echo "Content-Type: ${CONTENT_TYPE:-unknown}"
+
+
+          # ==========================================
+          # CONTENT LENGTH
+          # ==========================================
+
+          CONTENT_LENGTH=$(grep -i "^content-length:" headers.txt \
+            | tail -n 1 \
+            | cut -d: -f2- \
+            | tr -d '\r' \
+            | xargs)
+
+          echo "Content-Length: ${CONTENT_LENGTH:-unknown}"
+
+
+          # ==========================================
+          # CONTENT DISPOSITION
+          # ==========================================
+
+          SERVER_FILENAME=$(grep -i "content-disposition:" headers.txt \
+            | tail -n 1 \
+            | sed -n 's/.*filename="\([^"]*\)".*/\1/p' \
+            | tr -d '\r')
+
+          echo "Server filename: ${SERVER_FILENAME:-unknown}"
 
 
           # ==========================================
           # DETECT M3U8
           # ==========================================
+
           URL_LOWER=$(echo "$URL" | tr '[:upper:]' '[:lower:]')
 
           if [[ "$URL_LOWER" == *.m3u8* ]]; then
 
             echo ""
             echo "=========================================="
-            echo " M3U8 DETECTED"
+            echo " HLS / M3U8 DETECTED"
             echo "=========================================="
 
             echo "Downloading HLS stream..."
@@ -125,130 +183,48 @@ jobs:
               -i "$URL" \
               -map 0 \
               -c copy \
-              -movflags +faststart \
-              "downloads/${OUTPUT}.mp4"
+              "downloads/${NAME}.mkv"
 
             echo ""
-            echo "M3U8 download completed."
+            echo "HLS download completed."
 
           else
 
+            # ========================================
+            # DIRECT FILE
+            # ========================================
+
             echo ""
             echo "=========================================="
-            echo " DIRECT FILE DETECTED"
+            echo " DIRECT FILE"
             echo "=========================================="
 
-            # ==========================================
-            # RESOLVE REDIRECT
-            # ==========================================
-
-            echo "Resolving URL..."
-
-            HEADERS=$(curl \
-              -sS \
-              -L \
-              -D - \
-              -o /dev/null \
-              -r 0-0 \
-              --max-redirs 10 \
-              -H "Referer: $REFERER" \
-              -H "User-Agent: $USER_AGENT" \
-              "$URL")
-
-            echo ""
-            echo "Response headers:"
-            echo "$HEADERS"
+            echo "No conversion will be performed."
 
 
-            # ==========================================
-            # FINAL URL
-            # ==========================================
-
-            FINAL_URL=$(curl \
-              -sS \
-              -L \
-              -o /dev/null \
-              -w '%{url_effective}' \
-              --max-redirs 10 \
-              -r 0-0 \
-              -H "Referer: $REFERER" \
-              -H "User-Agent: $USER_AGENT" \
-              "$URL")
-
-            echo ""
-            echo "Final URL:"
-            echo "$FINAL_URL"
-
-
-            # ==========================================
-            # CONTENT-DISPOSITION
-            # ==========================================
-
-            FILENAME=$(echo "$HEADERS" \
-              | grep -i "content-disposition:" \
-              | tail -n 1 \
-              | sed -n 's/.*filename\*=[^'\'']*'\''[^'\'']*'\''\([^;]*\).*/\1/p' \
-              | tr -d '\r')
-
-            if [ -z "$FILENAME" ]; then
-              FILENAME=$(echo "$HEADERS" \
-                | grep -i "content-disposition:" \
-                | tail -n 1 \
-                | sed -n 's/.*filename="\([^"]*\)".*/\1/p' \
-                | tr -d '\r')
-            fi
-
-            if [ -z "$FILENAME" ]; then
-              FILENAME=$(echo "$HEADERS" \
-                | grep -i "content-disposition:" \
-                | tail -n 1 \
-                | sed -n 's/.*filename=\([^;]*\).*/\1/p' \
-                | tr -d '\r')
-            fi
-
-            echo ""
-            echo "Content-Disposition filename:"
-            echo "${FILENAME:-NOT FOUND}"
-
-
-            # ==========================================
-            # CONTENT-TYPE
-            # ==========================================
-
-            CONTENT_TYPE=$(echo "$HEADERS" \
-              | grep -i "^content-type:" \
-              | tail -n 1 \
-              | sed 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//' \
-              | cut -d ';' -f 1 \
-              | tr -d '\r' \
-              | tr '[:upper:]' '[:lower:]')
-
-            echo ""
-            echo "Content-Type:"
-            echo "${CONTENT_TYPE:-NOT FOUND}"
-
-
-            # ==========================================
-            # TRY TO GET EXTENSION FROM FILENAME
-            # ==========================================
+            # ========================================
+            # DETERMINE EXTENSION
+            # ========================================
 
             EXT=""
 
-            if [ -n "$FILENAME" ]; then
 
-              if [[ "$FILENAME" == *.* ]]; then
-                EXT="${FILENAME##*.}"
-                EXT=$(echo "$EXT" \
-                  | tr '[:upper:]' '[:lower:]' \
-                  | tr -cd '[:alnum:]')
+            # ----------------------------------------
+            # 1. Content-Disposition
+            # ----------------------------------------
+
+            if [ -n "$SERVER_FILENAME" ]; then
+
+              if [[ "$SERVER_FILENAME" == *.* ]]; then
+                EXT="${SERVER_FILENAME##*.}"
               fi
 
             fi
 
 
-            # ==========================================
-            # MIME TYPE → EXTENSION
-            # ==========================================
+            # ----------------------------------------
+            # 2. Content-Type
+            # ----------------------------------------
 
             if [ -z "$EXT" ]; then
 
@@ -323,93 +299,121 @@ jobs:
             fi
 
 
-            # ==========================================
-            # URL EXTENSION
-            # ==========================================
+            # ----------------------------------------
+            # 3. URL extension
+            # ----------------------------------------
 
             if [ -z "$EXT" ]; then
 
-              CLEAN_URL=$(echo "$FINAL_URL" | sed 's/[?#].*$//')
+              CLEAN_URL=$(echo "$URL" | sed 's/[?#].*$//')
+
               URL_FILENAME=$(basename "$CLEAN_URL")
 
               if [[ "$URL_FILENAME" == *.* ]]; then
 
                 EXT="${URL_FILENAME##*.}"
 
-                EXT=$(echo "$EXT" \
-                  | tr '[:upper:]' '[:lower:]' \
-                  | tr -cd '[:alnum:]')
-
               fi
 
             fi
 
 
-            # ==========================================
-            # INITIAL DOWNLOAD
-            # ==========================================
+            # ----------------------------------------
+            # Sanitize extension
+            # ----------------------------------------
+
+            EXT=$(echo "$EXT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | tr -cd '[:alnum:]')
+
+
+            # ========================================
+            # DOWNLOAD
+            # ========================================
+
+            TEMP_FILE="downloads/${NAME}.download"
+
+            echo ""
+            echo "▶ Starting download..."
+            echo "▶ Temporary file: $TEMP_FILE"
+
+            aria2c \
+              --continue=true \
+              --allow-overwrite=true \
+              --auto-file-renaming=false \
+              --file-allocation=none \
+              --max-tries=10 \
+              --retry-wait=5 \
+              --timeout=60 \
+              --connect-timeout=30 \
+              --split=16 \
+              --max-connection-per-server=16 \
+              --min-split-size=1M \
+              --check-integrity=true \
+              --summary-interval=10 \
+              --console-log-level=notice \
+              --header="Referer: $REFERER" \
+              --header="User-Agent: $USER_AGENT" \
+              "$URL" \
+              -d downloads \
+              -o "${NAME}.download"
+
+
+            # ========================================
+            # VERIFY DOWNLOAD
+            # ========================================
 
             echo ""
             echo "=========================================="
-            echo " DOWNLOAD"
+            echo " VERIFYING DOWNLOADED FILE"
             echo "=========================================="
 
-            # Jika extension sudah diketahui dari header,
-            # langsung download dengan nama tersebut.
+            if [ ! -f "$TEMP_FILE" ]; then
+              echo "ERROR: Downloaded file does not exist."
+              exit 1
+            fi
 
-            if [ -n "$EXT" ]; then
+            FILE_SIZE=$(stat -c%s "$TEMP_FILE")
 
-              echo "Detected extension: .$EXT"
+            echo "Downloaded size: $FILE_SIZE bytes"
 
-              aria2c \
-                --allow-overwrite=true \
-                --auto-file-renaming=false \
-                --file-allocation=none \
-                -x 16 \
-                -s 16 \
-                -k 1M \
-                --header="Referer: $REFERER" \
-                --header="User-Agent: $USER_AGENT" \
-                "$FINAL_URL" \
-                -d "downloads" \
-                -o "${OUTPUT}.${EXT}"
-
-            else
-
-              echo "Extension belum diketahui."
-              echo "Downloading temporary file untuk file signature detection..."
-
-              aria2c \
-                --allow-overwrite=true \
-                --auto-file-renaming=false \
-                --file-allocation=none \
-                -x 16 \
-                -s 16 \
-                -k 1M \
-                --header="Referer: $REFERER" \
-                --header="User-Agent: $USER_AGENT" \
-                "$FINAL_URL" \
-                -d "downloads" \
-                -o "${OUTPUT}.download"
-
-
-              # ========================================
-              # FILE SIGNATURE DETECTION
-              # ========================================
+            if [ "$FILE_SIZE" -lt 10000 ]; then
 
               echo ""
-              echo "=========================================="
-              echo " FILE SIGNATURE DETECTION"
-              echo "=========================================="
+              echo "WARNING: Downloaded file is unusually small."
+              echo ""
+              echo "File information:"
+              file "$TEMP_FILE"
 
-              FILE_INFO=$(file "downloads/${OUTPUT}.download")
+              echo ""
+              echo "First 1000 bytes:"
+              head -c 1000 "$TEMP_FILE" || true
 
-              echo "$FILE_INFO"
+              echo ""
+              echo "The server may have returned an error page."
+
+              exit 1
+
+            fi
 
 
-              # ========================================
-              # DETECT USING FILE COMMAND
-              # ========================================
+            # ========================================
+            # FILE SIGNATURE
+            # ========================================
+
+            echo ""
+            echo "File signature:"
+
+            file "$TEMP_FILE"
+
+
+            # ========================================
+            # DETECT EXTENSION FROM FILE SIGNATURE
+            # ========================================
+
+            if [ -z "$EXT" ]; then
+
+              FILE_INFO=$(file "$TEMP_FILE")
 
               case "$FILE_INFO" in
 
@@ -431,10 +435,6 @@ jobs:
 
                 *"MPEG transport stream"*)
                   EXT="ts"
-                  ;;
-
-                *"Audio MP3"*)
-                  EXT="mp3"
                   ;;
 
                 *"Audio file with ID3"*)
@@ -473,67 +473,59 @@ jobs:
                   EXT="gif"
                   ;;
 
-                *ASCII*)
-                  EXT="txt"
-                  ;;
-
                 *)
                   EXT="bin"
                   ;;
 
               esac
 
-
-              echo ""
-              echo "Detected extension from file signature: .$EXT"
-
-
-              mv \
-                "downloads/${OUTPUT}.download" \
-                "downloads/${OUTPUT}.${EXT}"
-
             fi
+
+
+            # ========================================
+            # FINALIZE FILE
+            # ========================================
+
+            FINAL_FILE="downloads/${NAME}.${EXT}"
+
+            echo ""
+            echo "=========================================="
+            echo " FINAL FILE"
+            echo "=========================================="
+
+            echo "Extension : .$EXT"
+            echo "Output    : $FINAL_FILE"
+
+            mv \
+              "$TEMP_FILE" \
+              "$FINAL_FILE"
+
+
+            # ========================================
+            # FINAL VERIFICATION
+            # ========================================
+
+            echo ""
+            echo "Final file:"
+
+            ls -lh "$FINAL_FILE"
+
+            echo ""
+            file "$FINAL_FILE"
 
           fi
 
 
-          # ==========================================
-          # VERIFY RESULT
-          # ==========================================
-
-          echo ""
+      # ==========================================
+      # LIST FILES
+      # ==========================================
+      - name: Show downloaded files
+        run: |
           echo "=========================================="
-          echo " DOWNLOAD RESULT"
+          echo " DOWNLOADED FILES"
           echo "=========================================="
 
           ls -lah downloads/
-
-
-          # ==========================================
-          # FILE INFORMATION
-          # ==========================================
-
-          for FILE in downloads/*; do
-
-            echo ""
-            echo "------------------------------------------"
-            echo "File: $FILE"
-            echo "------------------------------------------"
-
-            file "$FILE"
-
-            echo ""
-
-            if command -v ffprobe >/dev/null 2>&1; then
-              ffprobe \
-                -v error \
-                -show_entries format=format_name,format_long_name,duration,size \
-                -of default=noprint_wrappers=1 \
-                "$FILE" \
-                || true
-            fi
-
-          done
 
 
       # ==========================================
@@ -543,33 +535,24 @@ jobs:
         run: |
 
           echo "=========================================="
-          echo " UPLOAD TO GOOGLE DRIVE"
+          echo " UPLOADING TO GOOGLE DRIVE"
           echo "=========================================="
 
           rclone copy \
             downloads/ \
             gdrive:backup-folder \
             --progress \
-            --transfers=4 \
+            --transfers=2 \
             --checkers=8
 
-
-      # ==========================================
-      # SHOW UPLOADED FILE
-      # ==========================================
-      - name: List downloaded files
-        run: |
-          echo "=========================================="
-          echo " FINAL FILES"
-          echo "=========================================="
-
-          ls -lah downloads/
+          echo ""
+          echo "Upload completed."
 
 
       # ==========================================
       # CLEANUP
       # ==========================================
-      - name: Cleanup local files
+      - name: Cleanup
         if: always()
         run: |
           rm -rf downloads
