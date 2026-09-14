@@ -50,8 +50,8 @@ jobs:
             REFERER="${URL/\/download/}"
             USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
 
-            # Resolve the final download URL by explicitly extracting the Location header
-            FINAL_URL=$(curl -sI "$URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" | grep -i "location:" | head -n 1 | awk '{print $2}' | tr -d '\r')
+            # Resolve the final download URL by extracting the Location header via a GET request (HEAD might be blocked)
+            FINAL_URL=$(curl -s -D - -o /dev/null -r 0-0 "$URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" | grep -i "location:" | head -n 1 | awk '{print $2}' | tr -d '\r')
 
             if [ -z "$FINAL_URL" ]; then
               FINAL_URL="$URL"
@@ -59,11 +59,11 @@ jobs:
 
             echo "Resolved Final URL: $FINAL_URL"
 
-            # Get headers from FINAL_URL to determine the real extension
-            HEADERS=$(curl -sI "$FINAL_URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT")
+            # Get headers from FINAL_URL to determine the real extension (using GET instead of HEAD)
+            HEADERS=$(curl -s -D - -o /dev/null -r 0-0 "$FINAL_URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT")
             FILENAME=$(echo "$HEADERS" | grep -i "content-disposition:" | sed -n 's/.*filename="\([^"]*\)".*/\1/p' | tr -d '\r')
 
-            if [ -n "$FILENAME" ]; then
+            if [ -n "$FILENAME" ] && [[ "$FILENAME" == *.* ]]; then
               EXT="${FILENAME##*.}"
             else
               # Fallback: extract extension from FINAL_URL safely
