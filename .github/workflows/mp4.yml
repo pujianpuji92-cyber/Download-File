@@ -45,7 +45,17 @@ jobs:
             ffmpeg -i "$URL" -c copy "downloads/$OUTPUT.mp4"
           else
             echo "URL adalah MP4 → download langsung..."
-            aria2c -x 16 -s 16 -k 1M "$URL" -o "downloads/$OUTPUT.mp4"
+
+            # Extract Referer (remove /download if exists)
+            REFERER="${URL/\/download/}"
+            USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
+
+            # Resolve the final download URL by following redirects
+            FINAL_URL=$(curl -sI -L -o /dev/null -w "%{url_effective}" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" "$URL")
+
+            echo "Resolved Final URL: $FINAL_URL"
+
+            aria2c -x 16 -s 16 -k 1M --header="Referer: $REFERER" --header="User-Agent: $USER_AGENT" "$FINAL_URL" -d "downloads" -o "$OUTPUT.mp4"
           fi
 
       - name: Upload to Google Drive
