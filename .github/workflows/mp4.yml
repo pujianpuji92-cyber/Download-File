@@ -44,14 +44,14 @@ jobs:
             echo "URL adalah M3U8 → memakai ffmpeg untuk convert..."
             ffmpeg -i "$URL" -c copy "downloads/$OUTPUT.mp4"
           else
-            echo "URL adalah MP4 → download langsung..."
+            echo "URL bukan M3U8 → download langsung..."
 
             # Extract Referer (remove /download if exists)
             REFERER="${URL/\/download/}"
             USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
 
-            # Resolve the final download URL by extracting Location header
-            FINAL_URL=$(curl -sI "$URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" | grep -i "location:" | head -n 1 | awk '{print $2}' | tr -d '\r')
+            # Resolve the final download URL using a GET request with Range 0-0 to bypass HEAD restrictions
+            FINAL_URL=$(curl -s -L -w "%{url_effective}" -r 0-0 -o /dev/null -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT" "$URL")
 
             if [ -z "$FINAL_URL" ]; then
               FINAL_URL="$URL"
@@ -59,12 +59,33 @@ jobs:
 
             echo "Resolved Final URL: $FINAL_URL"
 
-            aria2c -x 16 -s 16 -k 1M --header="Referer: $REFERER" --header="User-Agent: $USER_AGENT" "$FINAL_URL" -d "downloads" -o "$OUTPUT.mp4"
+            # Get headers from FINAL_URL to determine the real extension (using HEAD or GET with range)
+            HEADERS=$(curl -sI -r 0-0 "$FINAL_URL" -H "Referer: $REFERER" -H "User-Agent: $USER_AGENT")
+            FILENAME=$(echo "$HEADERS" | grep -i "content-disposition:" | sed -n 's/.*filename="\([^"]*\)".*/\1/p' | tr -d '\r')
+
+            if [ -n "$FILENAME" ]; then
+              EXT="${FILENAME##*.}"
+            else
+              # Fallback: extract extension from FINAL_URL
+              URL_PATH=$(echo "$FINAL_URL" | awk -F'?' '{print $1}')
+              EXT="${URL_PATH##*.}"
+              # If EXT has no dot or is same as path, fallback to mp4
+              if [[ "$EXT" == "$URL_PATH" || -z "$EXT" ]]; then
+                EXT="mp4"
+              fi
+            fi
+
+            echo "Detected extension: $EXT"
+
+            # If user left OUTPUT_NAME as "output" and we found a real FILENAME, we could optionally use the real filename.
+            # But based on input defaults, we will use $OUTPUT.$EXT
+
+            aria2c -x 16 -s 16 -k 1M --header="Referer: $REFERER" --header="User-Agent: $USER_AGENT" "$FINAL_URL" -d "downloads" -o "$OUTPUT.$EXT"
           fi
 
       - name: Upload to Google Drive
         run: |
-          rclone copy downloads/*.mp4 gdrive:backup-folder --progress
+          rclone copy downloads/ gdrive:backup-folder --progress
 
       - name: Cleanup local files
         run: rm -rf downloads
